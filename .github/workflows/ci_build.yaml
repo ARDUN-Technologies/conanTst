@@ -60,7 +60,9 @@ jobs:
       - name: Verify Artifactory
         run: |
           tailscale status
-          curl -f -I "${{ env.ARTIFACTORY_URL }}"
+          ARTF_BASE=$(echo "${{ env.ARTIFACTORY_URL }}" | sed 's|/api/.*||')
+          curl -sf "${ARTF_BASE}/api/system/ping"
+          echo ""
           echo "✓ Artifactory reachable"
 
       - name: Checkout library
