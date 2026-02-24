@@ -1,0 +1,477 @@
+name: CI/CD - Build and Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      CLEAN_CACHE:
+        description: 'Clean Conan cache before build'
+        type: boolean
+        default: false
+      DEPLOY_TYPE:
+        description: 'Build type'
+        type: choice
+        options: [release, debug]
+        default: release
+      RUN_TESTS:
+        description: 'Run unit tests'
+        type: boolean
+        default: true
+      STATIC_ANALYSIS:
+        description: 'Run static analysis'
+        type: boolean
+        default: true
+
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'at/**'
+      - 'include/**'
+      - 'conanfile.py'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ci-build.yaml'
+
+  pull_request:
+    branches: [main]
+
+env:
+  CONAN_SNAPSHOT: '20251031'
+  ARTIFACTORY_URL: http://node3.tail3fa725.ts.net:8081/artifactory/api/conan/atpkgrepo-package
+  CONAN_REMOTE_NAME: myaf-pkg-repo
+  LIBRARY_NAME: ${{ github.event.repository.name }}
+  ARCH: amd64
+
+jobs:
+  build-and-publish:
+    name: Build ${{ github.event.repository.name }} (${{ github.event.inputs.DEPLOY_TYPE || 'release' }})
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ════════════════════════════════════════════════════════
+      # SETUP
+      # ════════════════════════════════════════════════════════
+      
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          tags: tag:github-runner
+
+      - name: Verify Artifactory
+        run: |
+          tailscale status
+          curl -f -I "${{ env.ARTIFACTORY_URL }}"
+          echo "✓ Artifactory reachable"
+
+      - name: Checkout library
+        uses: actions/checkout@v4
+
+      - name: Checkout atconan-config
+        uses: actions/checkout@v4
+        with:
+          repository: ARDUN-Technologies/atconan-config
+          ref: main
+          path: atconan-config
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Checkout at-conanio
+        uses: actions/checkout@v4
+        with:
+          repository: ARDUN-Technologies/at-conanio
+          ref: main
+          path: at-conanio
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Login to GitHub Container Registry
+        run: echo "${{ secrets.GH_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # ════════════════════════════════════════════════════════
+      # BUILD IN CONTAINER
+      # ════════════════════════════════════════════════════════
+
+      - name: Build and publish in container
+        run: |
+          DEPLOY_TYPE="${{ github.event.inputs.DEPLOY_TYPE || 'release' }}"
+          DEPLOY_CAP="$(echo ${DEPLOY_TYPE} | sed 's/.*/\u&/')"
+          RUN_TESTS="${{ github.event.inputs.RUN_TESTS || 'true' }}"
+          STATIC_ANALYSIS="${{ github.event.inputs.STATIC_ANALYSIS || 'true' }}"
+          CLEAN_CACHE="${{ github.event.inputs.CLEAN_CACHE || 'false' }}"
+          
+          docker run --rm \
+            --network=host \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            -e LIBRARY_NAME="${{ env.LIBRARY_NAME }}" \
+            -e DEPLOY_TYPE="${DEPLOY_TYPE}" \
+            -e DEPLOY_CAP="${DEPLOY_CAP}" \
+            -e ARCH="${{ env.ARCH }}" \
+            -e CONAN_SNAPSHOT="${{ env.CONAN_SNAPSHOT }}" \
+            -e ARTIFACTORY_URL="${{ env.ARTIFACTORY_URL }}" \
+            -e CONAN_REMOTE_NAME="${{ env.CONAN_REMOTE_NAME }}" \
+            -e ARTIFACTORY_USER="${{ secrets.ARTIFACTORY_USER }}" \
+            -e ARTF_CI_TOKEN="${{ secrets.ARTF_CI_TOKEN }}" \
+            -e RUN_TESTS="${RUN_TESTS}" \
+            -e STATIC_ANALYSIS="${STATIC_ANALYSIS}" \
+            -e CLEAN_CACHE="${CLEAN_CACHE}" \
+            -e GITHUB_REF="${{ github.ref }}" \
+            ghcr.io/ardun-technologies/at_cibaseimg-amd64:0.5.0 \
+            bash -c '
+              set -e
+              
+              echo "╔════════════════════════════════════════╗"
+              echo "║  Building ${LIBRARY_NAME}"
+              echo "║  Deploy: ${DEPLOY_TYPE} (${DEPLOY_CAP})"
+              echo "║  Arch:   ${ARCH}"
+              echo "╚════════════════════════════════════════╝"
+              
+              # Verify environment
+              echo ""
+              echo "=== Build Environment ==="
+              echo "User:  $(whoami)"
+              echo "gcc:   $(gcc --version | head -1)"
+              echo "glibc: $(/opt/glibc-2.35/lib/libc.so.6 | head -1)"
+              echo "Conan: $(conan --version)"
+              echo "CMake: $(cmake --version | head -1)"
+              echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+              echo ""
+              
+              # Detect library type
+              if [[ "${LIBRARY_NAME}" == pb_* ]]; then
+                NEEDS_CMAKE=false
+              else
+                NEEDS_CMAKE=true
+              fi
+              
+              # Clean cache (optional)
+              if [ "$CLEAN_CACHE" = "true" ]; then
+                echo "=== Cleaning Conan cache ==="
+                rm -rf ~/.conan2/p/*
+                echo "✓ Cache cleaned"
+                echo ""
+              fi
+              
+              # Install Conan config
+              echo "=== Installing Conan config ==="
+              conan config install atconan-config/
+              echo "✓ Config installed"
+              echo ""
+              
+              # Configure remotes
+              echo "=== Configuring Conan remotes ==="
+              
+              # Clean all remotes
+              conan remote list | awk "{sub(/:$/, \"\", \$1); print \$1}" | while read -r remote; do
+                [ -n "$remote" ] && conan remote remove "$remote" || true
+              done
+              
+              # Add myaf-pkg-repo (index 0)
+              conan remote add myaf-pkg-repo "${ARTIFACTORY_URL}" --index=0 --force
+              
+              # Add snapshot (index 1)
+              SNAPSHOT_PATH="/workspace/at-conanio/snapshots/${CONAN_SNAPSHOT}/recipes"
+              if [ ! -d "$SNAPSHOT_PATH" ]; then
+                echo "ERROR: Snapshot not found: $SNAPSHOT_PATH"
+                exit 1
+              fi
+              conan remote add cdtrel_snapshot "$SNAPSHOT_PATH" --index=1 --force
+              
+              echo ""
+              echo "Remotes configured:"
+              conan remote list
+              echo ""
+              
+              # Login to Artifactory
+              echo "=== Logging into Artifactory ==="
+              echo "Remote: ${CONAN_REMOTE_NAME}"
+              echo "User:   ${ARTIFACTORY_USER}"
+              conan remote login -p "${ARTF_CI_TOKEN}" "${CONAN_REMOTE_NAME}" "${ARTIFACTORY_USER}"
+              echo "✓ Logged in"
+              echo ""
+              
+              # Install dependencies (if CMake library)
+              if [ "$NEEDS_CMAKE" = "true" ]; then
+                echo "=== Installing dependencies ==="
+                conan install . \
+                  --profile:host="atconan-config/profiles/at_${DEPLOY_TYPE}-${ARCH}" \
+                  --profile:build="atconan-config/profiles/at_${DEPLOY_TYPE}-${ARCH}" \
+                  --build=missing
+                
+                if [ ! -d "build/${DEPLOY_CAP}/generators" ]; then
+                  echo "ERROR: Conan install failed"
+                  exit 1
+                fi
+                echo "✓ Dependencies installed"
+                echo ""
+              fi
+              
+              # Static analysis (if enabled and CMake library)
+              if [ "$NEEDS_CMAKE" = "true" ] && [ "$STATIC_ANALYSIS" = "true" ]; then
+                echo "========================================"
+                echo "Running Static Analysis"
+                echo "========================================"
+                
+                mkdir -p analysis-reports
+                source build/${DEPLOY_CAP}/generators/conanbuild.sh
+                
+                # cppcheck
+                echo ""
+                echo "=== cppcheck ==="
+                cppcheck \
+                  --enable=warning,style,performance,portability \
+                  --suppress=missingIncludeSystem \
+                  --suppress=unusedFunction \
+                  --std=c++20 \
+                  --inline-suppr \
+                  --quiet \
+                  --template="{file}:{line}:{severity}:{message}" \
+                  -I include/ \
+                  src/ 2>&1 | tee analysis-reports/cppcheck.txt || true
+                
+                CPPCHECK_ISSUES=$(grep -c ":" analysis-reports/cppcheck.txt || echo "0")
+                echo "cppcheck: $CPPCHECK_ISSUES issues found"
+                
+                # cpplint
+                echo ""
+                echo "=== cpplint ==="
+                find src include -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" \) 2>/dev/null | \
+                  xargs cpplint \
+                    --filter=-whitespace/line_length \
+                    --counting=detailed \
+                    2>&1 | tee analysis-reports/cpplint.txt || true
+                
+                echo ""
+                echo "========================================"
+                echo "Static Analysis Complete"
+                echo "========================================"
+                echo "Reports saved to analysis-reports/"
+                ls -lh analysis-reports/ || true
+                echo ""
+              fi
+              
+              # CMake configure and build (if CMake library)
+              if [ "$NEEDS_CMAKE" = "true" ]; then
+                echo "=== CMake configure ==="
+                chmod u+x build/${DEPLOY_CAP}/generators/*.sh
+                source build/${DEPLOY_CAP}/generators/conanbuild.sh
+                source build/${DEPLOY_CAP}/generators/conanrun.sh
+                cmake --preset conan-${DEPLOY_TYPE}
+                echo "✓ CMake configured"
+                echo ""
+                
+                echo "=== CMake build ==="
+                cd build/${DEPLOY_CAP}
+                source generators/conanbuild.sh
+                source generators/conanrun.sh
+                cmake --build . -j$(nproc)
+                BUILD_SUCCESS=true
+                cd /workspace
+                echo "✓ Build complete"
+                echo ""
+                
+                # Unit tests (if enabled) - SMART DETECTION
+                if [ "$RUN_TESTS" = "true" ]; then
+                  echo "=== Unit tests ==="
+                  cd build/${DEPLOY_CAP}
+                  
+                  # Find ALL test executables (flexible naming)
+                  TEST_EXES=$(find . -maxdepth 1 -type f -executable \( \
+                    -name "*-units" -o \
+                    -name "*-units.test" -o \
+                    -name "*-test" -o \
+                    -name "*-tests" -o \
+                    -name "*_units" -o \
+                    -name "*_test" -o \
+                    -name "*_tests" \
+                  \) | sort)
+                  
+                  if [ -n "$TEST_EXES" ]; then
+                    echo "Found test executables:"
+                    echo "$TEST_EXES"
+                    echo ""
+                    
+                    # Run each test executable
+                    TEST_EXIT_CODE=0
+                    TEST_COUNT=0
+                    for TEST_EXE in $TEST_EXES; do
+                      TEST_COUNT=$((TEST_COUNT + 1))
+                      TEST_NAME=$(basename "$TEST_EXE")
+                      echo "───────────────────────────────────────"
+                      echo "Running: $TEST_NAME"
+                      echo "───────────────────────────────────────"
+                      
+                      # Console output (shown in logs)
+                      ./$TEST_EXE --reporter console || TEST_EXIT_CODE=$?
+                      
+                      # JUnit XML (for GitHub summary)
+                      ./$TEST_EXE --reporter JUnit::out=test-results-${TEST_COUNT}.xml || true
+                      
+                      # Detailed console output (for artifacts)
+                      ./$TEST_EXE --reporter console --out=test-results-${TEST_COUNT}-console.txt || true
+                      
+                      echo ""
+                    done
+                    
+                    if [ $TEST_EXIT_CODE -eq 0 ]; then
+                      echo "✓ All tests passed"
+                    else
+                      echo "⚠️ Some tests failed (exit code: $TEST_EXIT_CODE)"
+                    fi
+                  else
+                    echo "No unit tests found for ${LIBRARY_NAME}"
+                    echo "(This is OK - not all libraries have tests)"
+                  fi
+                  
+                  cd /workspace
+                  echo ""
+                fi
+              else
+                BUILD_SUCCESS=true
+                echo "Pre-built library - no CMake build needed"
+                echo ""
+              fi
+              
+              # Export package
+              echo "=== Exporting package ==="
+              conan export .
+              
+              conan export-pkg . \
+                --profile:host="atconan-config/profiles/at_${DEPLOY_TYPE}-${ARCH}" \
+                --profile:build="atconan-config/profiles/at_${DEPLOY_TYPE}-${ARCH}"
+              
+              echo "✓ Package exported to local cache"
+              echo ""
+              
+              # Upload to Artifactory (only on main branch)
+              if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+                echo "=== Uploading to Artifactory ==="
+                conan upload "${LIBRARY_NAME}/*" \
+                  -r ${CONAN_REMOTE_NAME} \
+                  --confirm
+                echo "✓ Package uploaded"
+                echo ""
+                
+                echo "=== Verifying upload ==="
+                conan search "${LIBRARY_NAME}/*" -r ${CONAN_REMOTE_NAME}
+                echo "✓ Package verified in remote"
+              else
+                echo "Skipping upload (not on main branch)"
+              fi
+              
+              echo ""
+              echo "╔════════════════════════════════════════╗"
+              echo "║  ✓ Build Complete                     ║"
+              echo "╚════════════════════════════════════════╝"
+            '
+
+      # ════════════════════════════════════════════════════════
+      # PROCESS TEST RESULTS (NEW!)
+      # ════════════════════════════════════════════════════════
+
+      - name: Display test results in summary
+        if: always()
+        run: |
+          # Find all test result XML files
+          TEST_XMLS=$(find build -name "test-results-*.xml" 2>/dev/null || true)
+          
+          if [ -z "$TEST_XMLS" ]; then
+            echo "## ℹ️ No unit tests found for ${{ env.LIBRARY_NAME }}" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+          
+          echo "## 🧪 Unit Test Results - ${{ env.LIBRARY_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Aggregate results from all test executables
+          TOTAL_TESTS=0
+          TOTAL_FAILURES=0
+          TOTAL_ERRORS=0
+          TOTAL_SKIPPED=0
+          
+          for XML in $TEST_XMLS; do
+            TESTS=$(grep -o 'tests="[0-9]*"' "$XML" | grep -o '[0-9]*' || echo "0")
+            FAILURES=$(grep -o 'failures="[0-9]*"' "$XML" | grep -o '[0-9]*' || echo "0")
+            ERRORS=$(grep -o 'errors="[0-9]*"' "$XML" | grep -o '[0-9]*' || echo "0")
+            SKIPPED=$(grep -o 'skipped="[0-9]*"' "$XML" | grep -o '[0-9]*' || echo "0")
+            
+            TOTAL_TESTS=$((TOTAL_TESTS + TESTS))
+            TOTAL_FAILURES=$((TOTAL_FAILURES + FAILURES))
+            TOTAL_ERRORS=$((TOTAL_ERRORS + ERRORS))
+            TOTAL_SKIPPED=$((TOTAL_SKIPPED + SKIPPED))
+          done
+          
+          TOTAL_PASSED=$((TOTAL_TESTS - TOTAL_FAILURES - TOTAL_ERRORS - TOTAL_SKIPPED))
+          
+          # Summary table
+          echo "| Status | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|------:|" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ Passed | $TOTAL_PASSED |" >> $GITHUB_STEP_SUMMARY
+          echo "| ❌ Failed | $TOTAL_FAILURES |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⚠️ Errors | $TOTAL_ERRORS |" >> $GITHUB_STEP_SUMMARY
+          echo "| ⏭️ Skipped | $TOTAL_SKIPPED |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📊 **Total** | **$TOTAL_TESTS** |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Overall status
+          if [ "$TOTAL_FAILURES" -eq 0 ] && [ "$TOTAL_ERRORS" -eq 0 ]; then
+            echo "### ✅ All tests passed!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ⚠️ Some tests failed" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Test case details (collapsible)
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details>" >> $GITHUB_STEP_SUMMARY
+          echo "<summary>📋 Test Case Details (click to expand)</summary>" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Case | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|--------|" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse test cases from all XML files
+          for XML in $TEST_XMLS; do
+            XML_NAME=$(basename "$XML" .xml)
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**${XML_NAME}:**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            grep '<testcase' "$XML" | while IFS= read -r line; do
+              NAME=$(echo "$line" | sed -n 's/.*name="\([^"]*\).*/\1/p')
+              CLASSNAME=$(echo "$line" | sed -n 's/.*classname="\([^"]*\).*/\1/p')
+              
+              if echo "$line" | grep -q '<failure'; then
+                echo "| ${CLASSNAME}::${NAME} | ❌ Failed |" >> $GITHUB_STEP_SUMMARY
+              elif echo "$line" | grep -q '<error'; then
+                echo "| ${CLASSNAME}::${NAME} | ⚠️ Error |" >> $GITHUB_STEP_SUMMARY
+              elif echo "$line" | grep -q '<skipped'; then
+                echo "| ${CLASSNAME}::${NAME} | ⏭️ Skipped |" >> $GITHUB_STEP_SUMMARY
+              else
+                echo "| ${CLASSNAME}::${NAME} | ✅ Passed |" >> $GITHUB_STEP_SUMMARY
+              fi
+            done
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "</details>" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ env.LIBRARY_NAME }}-${{ github.event.inputs.DEPLOY_TYPE || 'release' }}-${{ github.run_number }}
+          path: |
+            build/**/test-results-*.xml
+            build/**/test-results-*-console.txt
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Upload static analysis reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-analysis-${{ env.LIBRARY_NAME }}-${{ github.event.inputs.DEPLOY_TYPE || 'release' }}-${{ github.run_number }}
+          path: analysis-reports/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ./conan*.sh ./deactivate_*.sh

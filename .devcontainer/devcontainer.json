@@ -1,0 +1,90 @@
+{
+  "name": "ARDUN DevContainer",
+  "image": "ghcr.io/ardun-technologies/at_devcontainer-amd64:0.5.1",
+
+  // ================================================================
+  // Devcontainer environment variables
+  // ================================================================
+  "remoteEnv": {
+      "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}",
+      "JFROG_USER": "${localEnv:JFROG_USER}",
+      "JFROG_TOKEN": "${localEnv:JFROG_TOKEN}"
+  },
+
+  // ================================================================
+  // WORKSPACE MOUNTING
+  // Mount your entire ~/repo directory from WSL host
+  // ================================================================
+  "workspaceMount": "source=${localEnv:HOME}/repo,target=/home/developer/repo,type=bind,consistency=cached",
+  "workspaceFolder": "/home/developer/repo",
+
+  "remoteUser": "developer",
+
+  // ================================================================
+  // VS CODE CUSTOMIZATIONS
+  // ================================================================
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "editor.formatOnSave": true,
+
+        // C++ / CMake
+        "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+        "cmake.configureOnOpen": true,
+        "cmake.generator": "Ninja",
+
+        // Go
+        "go.toolsManagement.autoUpdate": false,
+        "go.toolsManagement.go": "/usr/local/go/bin/go",
+        "go.gopath": "/home/developer/go",
+        "go.goroot": "/usr/local/go",
+
+        // Rust
+        "rust-analyzer.server.path": "/opt/rust/cargo/bin/rust-analyzer",
+
+        // .NET / C# 
+        "dotnet.defaultSolution": "StoryboardSuite.sln", 
+        "omnisharp.enableRoslynAnalyzers": true, 
+        "omnisharp.useModernNet": true
+      },
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "golang.go",
+        "rust-lang.rust-analyzer",
+        "eamodio.gitlens",
+        "ms-azuretools.vscode-docker",
+        "ms-dotnettools.csharp",
+        "zxh404.vscode-proto3"
+      ]
+    }
+  },
+
+  // ================================================================
+  // VOLUME MOUNTS FOR PERSISTENCE
+  // ================================================================
+  "mounts": [
+    // Persist Conan package cache across container rebuilds
+    "source=ardun-conan-cache,target=/home/developer/.conan2/p,type=volume",
+    
+    // Persist Conan download cache
+    "source=ardun-conan-download,target=/home/developer/.conan2/d,type=volume",
+    
+    // Persist Go modules
+    "source=ardun-go-cache,target=/home/developer/go/pkg,type=volume",
+    
+    // Persist Cargo registry
+    "source=ardun-cargo-cache,target=/opt/rust/cargo/registry,type=volume",
+    
+    // SSH keys from WSL host (read-only)
+    "source=${localEnv:HOME}/.ssh,target=/home/developer/.ssh,type=bind,readonly"
+  ],
+
+  // ================================================================
+  // PORTS (for DDS, debug servers, etc.)
+  // ================================================================
+  "forwardPorts": [7400, 7401, 8080]
+}
+
