@@ -10,7 +10,7 @@ from conan.tools.cmake import CMakeToolchain, CMake, cmake_layout, CMakeDeps
 # Description: provides C++ blah-blah
 #
 class BazfooConan(ConanFile):
-    name = "conanTst"
+    name = "conantst"
     version = "0.3.0"
     settings = "os", "compiler", "build_type", "arch"
     options = {"shared": [True, False], "fPIC": [True, False]}
