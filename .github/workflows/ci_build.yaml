@@ -116,7 +116,7 @@ jobs:
             -e STATIC_ANALYSIS="${STATIC_ANALYSIS}" \
             -e CLEAN_CACHE="${CLEAN_CACHE}" \
             -e GITHUB_REF="${{ github.ref }}" \
-            ghcr.io/ardun-technologies/at_cibaseimg-amd64:0.5.0 \
+            ghcr.io/ardun-technologies/at_cibaseimg-amd64:0.6.0 \
             bash -c '
               set -e
               
