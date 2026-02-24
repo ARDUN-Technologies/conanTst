@@ -52,5 +52,5 @@ class BazfooConan(ConanFile):
 
     # Build tool requirements listed here...
     def build_requirements(self):
-        self.tool_requires("cmake/3.25.3")
+        self.tool_requires("cmake/3.31.9")
 
