@@ -51,6 +51,79 @@ jobs:
       # SETUP
       # ════════════════════════════════════════════════════════
       
+      - name: Checking Versions of Conan.py and CMakeLists.txt
+        run: |
+          set -euo pipefail
+          REPO_PATH="$(pwd)"
+          echo "Repository path: ${REPO_PATH}"
+          if [ ! -f "${REPO_PATH}/conanfile.py" ]; then
+              echo "Error: conanfile.py not found in ${REPO_PATH}"
+              exit 1
+          fi
+
+          if [ ! -f "${REPO_PATH}/CMakeLists.txt" ]; then
+              echo "Error: CMakeLists.txt not found in ${REPO_PATH}"
+              exit 1
+          fi
+
+          cd "${REPO_PATH}"
+
+          # Extract package name and version from conanfile.py
+          CONAN_NAME=$(grep -E '^\s*name\s*=' conanfile.py | sed -E 's/.*name\s*=\s*"([^"]+)".*/\1/')
+          CONAN_VERSION=$(grep -E '^\s*version\s*=' conanfile.py | sed -E 's/.*version\s*=\s*"([^"]+)".*/\1/')
+
+          # Extract project name and version from CMakeLists.txt
+          CMAKE_NAME=$(grep -E '^\s*project\(' CMakeLists.txt -A 5 | grep -v '#' | tr -d '\n' | sed -E 's/.*project\s*\(\s*([a-zA-Z0-9_-]+).*/\1/')
+          CMAKE_VERSION=$(grep -E '^\s*project\(' CMakeLists.txt -A 5 | grep -i 'VERSION' | sed -E 's/.*VERSION\s+([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+
+          echo "=========================================="
+          echo "  Package Name Consistency Checker"
+          echo "=========================================="
+          echo "Repository: ${REPO_PATH}"
+          echo ""
+
+          # Check name consistency
+          echo "Package Name:"
+          echo "  conanfile.py:   ${CONAN_NAME}"
+          echo "  CMakeLists.txt: ${CMAKE_NAME}"
+
+          if [ "${CONAN_NAME}" == "${CMAKE_NAME}" ]; then
+              echo "  ✓ Names match"
+          else
+              echo "  ⚠️  Package Names DO NOT match!"
+              echo "Result: ❌ INCONSISTENT"
+              echo ""
+              echo "Action required:"
+              echo "  1. Update conanfile.py PROJECT NAME to ${CMAKE_NAME}, OR"
+              echo "  2. Update CMakeLists.txt PROJECT NAME to ${CONAN_NAME}"
+              exit 1
+          fi
+
+          echo ""
+
+          echo "=========================================="
+          echo "  Version Consistency Checker"
+          echo "=========================================="
+          echo "Repository: ${REPO_PATH}"
+          echo ""
+
+          # Check version consistency
+          echo "Package Version:"
+          echo "  conanfile.py:   ${CONAN_VERSION}"
+          echo "  CMakeLists.txt: ${CMAKE_VERSION}"
+
+          if [ "${CONAN_VERSION}" == "${CMAKE_VERSION}" ]; then
+              echo "  ✓ Versions match"
+          else
+              echo "  ⚠️  Versions DO NOT match!"
+              echo "Result: ❌ INCONSISTENT"
+              echo ""
+              echo "Action required:"
+              echo "  1. Update conanfile.py VERSION to ${CMAKE_VERSION}, OR"
+              echo "  2. Update CMakeLists.txt VERSION to ${CONAN_VERSION}"
+              exit 1
+          fi
+
       - name: Setup Tailscale
         uses: tailscale/github-action@v2
         with:

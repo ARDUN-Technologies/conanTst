@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25.3)
 
-project(bazfoo
+project(conantst
     VERSION 0.3.0
     DESCRIPTION "Arbitrary C++ library"
     LANGUAGES CXX)
