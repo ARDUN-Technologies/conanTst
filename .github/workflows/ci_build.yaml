@@ -51,9 +51,27 @@ jobs:
       # SETUP
       # ════════════════════════════════════════════════════════
       
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          tags: tag:github-runner
+
+      - name: Verify Artifactory
+        run: |
+          tailscale status
+          ARTF_BASE=$(echo "${{ env.ARTIFACTORY_URL }}" | sed 's|/api/.*||')
+          curl -sf "${ARTF_BASE}/api/system/ping"
+          echo ""
+          echo "✓ Artifactory reachable"
+
+      - name: Checkout library
+        uses: actions/checkout@v4
+
       - name: Checking Versions of Conan.py and CMakeLists.txt
         run: |
           set -euo pipefail
+          echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE}"
           REPO_PATH="$GITHUB_WORKSPACE"
           echo "Repository path: ${REPO_PATH}"
           if [ ! -f "${REPO_PATH}/conanfile.py" ]; then
@@ -67,6 +85,12 @@ jobs:
           fi
 
           cd "${REPO_PATH}"
+
+          echo "Checking conanfile.py:"
+          ls -l conanfile.py || echo "conanfile.py NOT found"
+          
+          echo "Checking CMakeLists.txt:"
+          ls -l CMakeLists.txt || echo "CMakeLists.txt NOT found"
 
           # Extract package name and version from conanfile.py
           CONAN_NAME=$(grep -E '^\s*name\s*=' conanfile.py | sed -E 's/.*name\s*=\s*"([^"]+)".*/\1/')
@@ -123,23 +147,6 @@ jobs:
               echo "  2. Update CMakeLists.txt VERSION to ${CONAN_VERSION}"
               exit 1
           fi
-
-      - name: Setup Tailscale
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          tags: tag:github-runner
-
-      - name: Verify Artifactory
-        run: |
-          tailscale status
-          ARTF_BASE=$(echo "${{ env.ARTIFACTORY_URL }}" | sed 's|/api/.*||')
-          curl -sf "${ARTF_BASE}/api/system/ping"
-          echo ""
-          echo "✓ Artifactory reachable"
-
-      - name: Checkout library
-        uses: actions/checkout@v4
 
       - name: Checkout atconan-config
         uses: actions/checkout@v4
