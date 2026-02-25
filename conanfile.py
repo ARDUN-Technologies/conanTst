@@ -11,7 +11,7 @@ from conan.tools.cmake import CMakeToolchain, CMake, cmake_layout, CMakeDeps
 #
 class BazfooConan(ConanFile):
     name = "conantst"
-    version = "0.3.0"
+    version = "0.3.1"
     settings = "os", "compiler", "build_type", "arch"
     options = {"shared": [True, False], "fPIC": [True, False]}
     default_options = {"shared": False, "fPIC": True}
