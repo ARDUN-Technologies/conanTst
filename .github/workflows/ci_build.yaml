@@ -54,7 +54,7 @@ jobs:
       - name: Checking Versions of Conan.py and CMakeLists.txt
         run: |
           set -euo pipefail
-          REPO_PATH="$(pwd)"
+          REPO_PATH="$GITHUB_WORKSPACE"
           echo "Repository path: ${REPO_PATH}"
           if [ ! -f "${REPO_PATH}/conanfile.py" ]; then
               echo "Error: conanfile.py not found in ${REPO_PATH}"
